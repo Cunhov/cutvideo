@@ -173,9 +173,9 @@ class AutoEditorGUI:
         ttk.Label(self.magic_controls, text="Mais Suave").grid(row=1, column=1, sticky=tk.E)
         # Slider Nível de Concisão
         ttk.Label(self.magic_controls, text="Nível de Concisão da IA (Conteúdo):", style='Section.TLabel').grid(row=2, column=0, sticky=tk.W, pady=(10, 0))
-        self.magic_concision = tk.IntVar(value=3)
-        concision_slider = ttk.Scale(self.magic_controls, from_=1, to=5, variable=self.magic_concision, orient=tk.HORIZONTAL)
-        concision_slider.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0))
+        self.magic_conciseness = tk.IntVar(value=3)
+        conciseness_slider = ttk.Scale(self.magic_controls, from_=1, to=5, variable=self.magic_conciseness, orient=tk.HORIZONTAL)
+        conciseness_slider.grid(row=2, column=1, sticky=(tk.W, tk.E), padx=(10, 0))
         ttk.Label(self.magic_controls, text="Mais Enxuto").grid(row=3, column=0, sticky=tk.W)
         ttk.Label(self.magic_controls, text="Mais Encorpado").grid(row=3, column=1, sticky=tk.E)
         # Checkbox J-Cut
@@ -236,8 +236,21 @@ class AutoEditorGUI:
         self.config_status_label = ttk.Label(config_frame, text="Pronto para editar", style='Info.TLabel', foreground='blue')
         self.config_status_label.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
 
+        # Widget oculto para comando (evita erro de atributo)
+        if not hasattr(self, 'command_text'):
+            self.command_text = tk.Text(config_frame, height=1, width=1)
+            self.command_text.grid_forget()
+
         # Inicializar visibilidade
         self.update_mode_visibility()
+
+        # Botão de ação principal para Automágica
+        self.magic_action_btn = ttk.Button(self.magic_controls, text="Executar Edição Automágica", command=self.start_auto_magic_edit, style='Action.TButton')
+        self.magic_action_btn.grid(row=10, column=0, columnspan=2, pady=(20, 0), sticky=(tk.W, tk.E))
+
+        # Botão de ação principal para Simples
+        self.simple_action_btn = ttk.Button(self.simple_controls, text="Executar Edição Simples", command=self.start_simple_edit, style='Action.TButton')
+        self.simple_action_btn.grid(row=10, column=0, columnspan=2, pady=(20, 0), sticky=(tk.W, tk.E))
 
     def update_mode_visibility(self):
         """Atualiza a visibilidade dos controles conforme o modo selecionado"""
@@ -1470,12 +1483,13 @@ class AutoEditorGUI:
         return merged_cuts
     
     def update_command(self, *args):
-        """Atualiza o comando exibido"""
-        command = self.build_command()
-        self.command_text.config(state='normal')
-        self.command_text.delete(1.0, tk.END)
-        self.command_text.insert(1.0, command)
-        self.command_text.config(state='disabled')
+        """Atualiza o comando exibido (se o widget existir)"""
+        if hasattr(self, 'command_text'):
+            self.command_text.config(state='normal')
+            self.command_text.delete(1.0, tk.END)
+            cmd = self.build_command()
+            self.command_text.insert(tk.END, cmd)
+            self.command_text.config(state='disabled')
     
     def transcribe_with_openai_api(self, audio_file):
         """Transcreve usando API da OpenAI"""
@@ -3421,11 +3435,11 @@ Analise cuidadosamente e forneça apenas sugestões relevantes que realmente mel
                 output = self.output_file.get()
                 cut_style = self.simple_cut_style.get()
                 # Mapear cut_style para parâmetros
-                margin = 0.1 + (cut_style-1)*0.1  # 0.1 a 0.5
-                threshold = 0.04 + (cut_style-1)*0.01  # 0.04 a 0.08
+                margin = round(0.1 + (cut_style-1)*0.1, 2)  # 0.1 a 0.5
+                threshold = round(0.04 + (cut_style-1)*0.01, 2)  # 0.04 a 0.08
                 # 1. Análise dos clipes
                 json_path = tempfile.mktemp(suffix="_ae.json")
-                cmd = ["auto-editor", video, f"--margin={margin}", f"--silent-threshold={threshold}", "--export", "json", "-o", json_path]
+                cmd = ["auto-editor", video, "-m", str(margin), "--edit", "audio", "--silent-threshold", str(threshold), "--export", "json", "-o", json_path]
                 self.log_message(f"Comando: {' '.join(map(str,cmd))}", "INFO")
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
@@ -3463,7 +3477,7 @@ Analise cuidadosamente e forneça apenas sugestões relevantes que realmente mel
         threading.Thread(target=worker, daemon=True).start()
 
     def engine_jcut(self, playlist, jcut_duration, input_video, output_video):
-        """Engine modular de J-Cut: sobrepõe áudio entre clipes usando ffmpeg"""
+        """Engine modular de J-Cut: sobrepõe áudio entre clipes usando ffmpeg avançado"""
         import tempfile, shutil
         import os
         import subprocess
@@ -3471,39 +3485,49 @@ Analise cuidadosamente e forneça apenas sugestões relevantes que realmente mel
         temp_clips = []
         try:
             self.log_message(f"Iniciando engine J-Cut com {len(playlist)} clipes...", "INFO")
-            for i, clip in enumerate(playlist):
-                start = clip['start']
-                end = clip['end']
-                out_path = os.path.join(temp_dir, f"clip_{i:03d}.mp4")
-                # Extrai o clipe
-                cmd = ["ffmpeg", "-y", "-i", input_video, "-ss", str(start), "-to", str(end), "-c:v", "copy", "-c:a", "aac", out_path]
+            jd = float(jcut_duration)
+            # 4.1. Loop principal de geração de clipes com transição
+            for i in range(len(playlist)-1):
+                start_i = playlist[i]['start']
+                end_i = playlist[i]['end']
+                start_next = playlist[i+1]['start']
+                # Calcula limites para trims
+                end_i_menos_jd = max(start_i, end_i - jd)
+                start_next_mais_jd = start_next + jd
+                out_path = os.path.join(temp_dir, f"temp_clip_{i:03d}.mp4")
+                filter_complex = (
+                    f"[0:v]trim=start={start_i}:end={end_i},setpts=PTS-STARTPTS[v_out]; "
+                    f"[0:a]atrim=start={start_i}:end={end_i_menos_jd},asetpts=PTS-STARTPTS[a_part1]; "
+                    f"[0:a]atrim=start={start_next}:end={start_next_mais_jd},asetpts=PTS-STARTPTS[a_part2]; "
+                    f"[a_part1][a_part2]concat=n=2:v=0:a=1[a_out]"
+                )
+                cmd = [
+                    "ffmpeg", "-y", "-i", input_video,
+                    "-filter_complex", filter_complex,
+                    "-map", "[v_out]", "-map", "[a_out]",
+                    "-c:v", "libx264", "-c:a", "aac", out_path
+                ]
+                self.log_message(f"J-Cut ffmpeg: {' '.join(map(str,cmd))}", "INFO")
                 subprocess.run(cmd, capture_output=True)
                 temp_clips.append(out_path)
-            # J-Cut: sobrepor áudio entre pares
-            jcut_sec = float(jcut_duration)
-            final_clips = []
-            for i in range(len(temp_clips)-1):
-                c1 = temp_clips[i]
-                c2 = temp_clips[i+1]
-                out_jcut = os.path.join(temp_dir, f"jcut_{i:03d}.mp4")
-                # Sobrepõe áudio do início do próximo clipe
-                cmd = [
-                    "ffmpeg", "-y",
-                    "-i", c1, "-i", c2,
-                    "-filter_complex",
-                    f"[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[v][a];[0:a]atrim=duration={c1},asetpts=PTS-STARTPTS[a0];[1:a]atrim=duration={jcut_sec},asetpts=PTS-STARTPTS,afade=t=in:st=0:d={jcut_sec}[a1];[a0][a1]amix=inputs=2[aout]",
-                    "-map", "[v]", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", out_jcut
-                ]
-                subprocess.run(cmd, capture_output=True)
-                final_clips.append(out_jcut)
-            # Último clipe
-            final_clips.append(temp_clips[-1])
-            # Concatena todos
-            concat_list = os.path.join(temp_dir, "concat.txt")
+            # 4.2. Último clipe (sem transição)
+            last = playlist[-1]
+            last_path = os.path.join(temp_dir, f"temp_clip_{len(playlist)-1:03d}.mp4")
+            cmd_last = [
+                "ffmpeg", "-y", "-i", input_video,
+                "-ss", str(last['start']), "-to", str(last['end']),
+                "-c:v", "libx264", "-c:a", "aac", last_path
+            ]
+            self.log_message(f"Último clipe ffmpeg: {' '.join(map(str,cmd_last))}", "INFO")
+            subprocess.run(cmd_last, capture_output=True)
+            temp_clips.append(last_path)
+            # 4.3. Consolidação
+            concat_list = os.path.join(temp_dir, "filelist.txt")
             with open(concat_list, 'w') as f:
-                for c in final_clips:
+                for c in temp_clips:
                     f.write(f"file '{c}'\n")
             cmd_concat = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", output_video]
+            self.log_message(f"Concat ffmpeg: {' '.join(map(str,cmd_concat))}", "INFO")
             subprocess.run(cmd_concat, capture_output=True)
             self.config_status_label.config(text="J-Cut concluído!", foreground='green')
             self.log_message("J-Cut finalizado com sucesso!", "SUCCESS")
@@ -3512,6 +3536,174 @@ Analise cuidadosamente e forneça apenas sugestões relevantes que realmente mel
             self.log_message(str(e), "ERROR")
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def start_auto_magic_edit(self):
+        """Executa o pipeline do modo Edição Automágica (com IA Completa)"""
+        import threading
+        def worker():
+            try:
+                self.config_status_label.config(text="Iniciando pipeline IA...", foreground='blue')
+                self.log_message("Iniciando pipeline Automágico...", "INFO")
+                video = self.input_file.get()
+                output = self.output_file.get()
+                cut_style = self.magic_cut_style.get()
+                conciseness = self.magic_conciseness.get()
+                # Mapear sliders para parâmetros concretos
+                margin = round(0.1 + (cut_style-1)*0.1, 2)  # 0.1 a 0.5
+                threshold = round(0.04 + (cut_style-1)*0.01, 2)  # 0.04 a 0.08
+                # 1. Análise de Silêncio
+                self.config_status_label.config(text="Analisando silêncio...", foreground='blue')
+                json_path = tempfile.mktemp(suffix="_ae.json")
+                cmd = ["auto-editor", video, "-m", str(margin), "--edit", "audio", "--silent-threshold", str(threshold), "--export", "json", "-o", json_path]
+                self.log_message(f"Comando: {' '.join(map(str,cmd))}", "INFO")
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode != 0:
+                    self.config_status_label.config(text="Erro na análise de silêncio.", foreground='red')
+                    self.log_message(result.stderr, "ERROR")
+                    return
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                speech_chunks = data.get('chunks', [])
+                self.log_message(f"{len(speech_chunks)} clipes de fala detectados.", "SUCCESS")
+                # 2. Transcrição com Whisper
+                self.config_status_label.config(text="Transcrevendo áudio...", foreground='blue')
+                if not WHISPER_AVAILABLE:
+                    self.config_status_label.config(text="Whisper não disponível.", foreground='red')
+                    self.log_message("Whisper não instalado.", "ERROR")
+                    return
+                if not hasattr(self, 'whisper_result') or self.whisper_result is None:
+                    # Extrair áudio temporário
+                    audio_path = tempfile.mktemp(suffix="_audio.mp3")
+                    cmd_audio = ["ffmpeg", "-y", "-i", video, "-vn", "-acodec", "mp3", audio_path]
+                    subprocess.run(cmd_audio, capture_output=True)
+                    model = whisper.load_model(self.whisper_model.get())
+                    self.whisper_result = model.transcribe(audio_path, fp16=self.use_gpu.get())
+                transcription = self.whisper_result.get('text', '')
+                segments = self.whisper_result.get('segments', [])
+                # 3. Análise de Erros (LLM Pass 1)
+                self.config_status_label.config(text="Analisando erros de fala (LLM Pass 1)...", foreground='blue')
+                rigor_prompt = f"Remova erros de fala, hesitações e repetições. Seja rigoroso nível {conciseness}/5. Retorne apenas os timestamps dos erros."  # Exemplo
+                error_timestamps = self.llm_analyze_errors(transcription, segments, rigor_prompt)
+                # 4. Análise de Narrativa (LLM Pass 2)
+                self.config_status_label.config(text="Analisando narrativa (LLM Pass 2)...", foreground='blue')
+                conciseness_prompt = f"Reorganize e resuma o texto para um vídeo mais enxuto (nível {conciseness}/5). Retorne a playlist final (start/end) e clipes a excluir."  # Exemplo
+                playlist, to_exclude = self.llm_analyze_narrative(transcription, segments, conciseness_prompt)
+                # 5. Renderização
+                if self.magic_jcut_enabled.get():
+                    self.config_status_label.config(text="Renderizando com J-Cut...", foreground='blue')
+                    self.engine_jcut(playlist, self.magic_jcut_duration.get(), video, output)
+                else:
+                    self.config_status_label.config(text="Renderizando vídeo final...", foreground='blue')
+                    # Exportar clipes na ordem da playlist
+                    addins = []
+                    for clip in playlist:
+                        addins.extend(["--add-in", f"{clip['start']}-{clip['end']}"])
+                    cmd2 = ["auto-editor", video, "--edit", "all/e"] + addins + ["-o", output]
+                    self.log_message(f"Comando: {' '.join(map(str,cmd2))}", "INFO")
+                    result2 = subprocess.run(cmd2, capture_output=True, text=True)
+                    if result2.returncode != 0:
+                        self.config_status_label.config(text="Erro na renderização.", foreground='red')
+                        self.log_message(result2.stderr, "ERROR")
+                        return
+                self.config_status_label.config(text="Edição Automágica concluída!", foreground='green')
+                self.log_message("Edição Automágica finalizada com sucesso!", "SUCCESS")
+            except Exception as e:
+                self.config_status_label.config(text=f"Erro: {e}", foreground='red')
+                self.log_message(str(e), "ERROR")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def llm_analyze_errors(self, transcription, segments, prompt):
+        """Chama o LLM para análise de erros de fala. Retorna lista de timestamps."""
+        try:
+            self.log_message("Chamando LLM para análise de erros de fala...", "INFO")
+            if OPENAI_AVAILABLE and self.selected_llm_provider.get() == "openai":
+                response = openai.ChatCompletion.create(
+                    model=self.selected_llm_model.get(),
+                    messages=[{"role": "system", "content": prompt}, {"role": "user", "content": transcription}]
+                )
+                content = response['choices'][0]['message']['content']
+                self.log_message(f"Resposta LLM: {content}", "INFO")
+                try:
+                    # Espera-se que o LLM retorne JSON: {"errors": [{"start":..., "end":...}, ...]}
+                    import json as _json
+                    parsed = _json.loads(content)
+                    return parsed.get('errors', [])
+                except Exception:
+                    self.log_message("Resposta do LLM não é JSON. Retornando vazio.", "WARNING")
+                    return []
+            elif GEMINI_AVAILABLE and self.selected_llm_provider.get() == "gemini":
+                response = genai.generate_content(prompt + "\n" + transcription)
+                content = response.text
+                self.log_message(f"Resposta Gemini: {content}", "INFO")
+                try:
+                    import json as _json
+                    parsed = _json.loads(content)
+                    return parsed.get('errors', [])
+                except Exception:
+                    self.log_message("Resposta do Gemini não é JSON. Retornando vazio.", "WARNING")
+                    return []
+            else:
+                self.log_message("Nenhum LLM disponível. Retornando lista vazia.", "WARNING")
+                return []
+        except Exception as e:
+            self.log_message(f"Erro ao chamar LLM: {e}", "ERROR")
+            return []
+
+    def llm_analyze_narrative(self, transcription, segments, prompt):
+        """Chama o LLM para análise de narrativa. Retorna playlist e clipes a excluir."""
+        try:
+            self.log_message("Chamando LLM para análise de narrativa...", "INFO")
+            if OPENAI_AVAILABLE and self.selected_llm_provider.get() == "openai":
+                response = openai.ChatCompletion.create(
+                    model=self.selected_llm_model.get(),
+                    messages=[{"role": "system", "content": prompt}, {"role": "user", "content": transcription}]
+                )
+                content = response['choices'][0]['message']['content']
+                self.log_message(f"Resposta LLM: {content}", "INFO")
+                try:
+                    import json as _json
+                    parsed = _json.loads(content)
+                    playlist = parsed.get('playlist', [])
+                    to_exclude = parsed.get('to_exclude', [])
+                    return playlist, to_exclude
+                except Exception:
+                    self.log_message("Resposta do LLM não é JSON. Usando playlist padrão.", "WARNING")
+                    playlist = []
+                    for seg in segments:
+                        playlist.append({'start': seg['start'], 'end': seg['end']})
+                    to_exclude = []
+                    return playlist, to_exclude
+            elif GEMINI_AVAILABLE and self.selected_llm_provider.get() == "gemini":
+                response = genai.generate_content(prompt + "\n" + transcription)
+                content = response.text
+                self.log_message(f"Resposta Gemini: {content}", "INFO")
+                try:
+                    import json as _json
+                    parsed = _json.loads(content)
+                    playlist = parsed.get('playlist', [])
+                    to_exclude = parsed.get('to_exclude', [])
+                    return playlist, to_exclude
+                except Exception:
+                    self.log_message("Resposta do Gemini não é JSON. Usando playlist padrão.", "WARNING")
+                    playlist = []
+                    for seg in segments:
+                        playlist.append({'start': seg['start'], 'end': seg['end']})
+                    to_exclude = []
+                    return playlist, to_exclude
+            else:
+                self.log_message("Nenhum LLM disponível. Retornando playlist padrão.", "WARNING")
+                playlist = []
+                for seg in segments:
+                    playlist.append({'start': seg['start'], 'end': seg['end']})
+                to_exclude = []
+                return playlist, to_exclude
+        except Exception as e:
+            self.log_message(f"Erro ao chamar LLM: {e}", "ERROR")
+            playlist = []
+            for seg in segments:
+                playlist.append({'start': seg['start'], 'end': seg['end']})
+            to_exclude = []
+            return playlist, to_exclude
 
 def main():
     """Função principal"""
