@@ -1,0 +1,23 @@
+# Dependências para Auto-Editor GUI com Correção de Fala por IA
+
+# Bibliotecas principais já incluídas no Python padrão:
+# - tkinter (GUI)
+# - subprocess (execução de comandos)
+# - threading (threads)
+# - queue (comunicação entre threads)
+# - os (manipulação de arquivos)
+# - shutil (verificação de executáveis)
+
+# Dependências externas para correção de fala por IA:
+openai-whisper @ git+https://github.com/openai/whisper.git
+tiktoken
+openai
+
+# Dependências para Google Gemini:
+google-generativeai
+
+# Dependências para monitoramento de recursos:
+psutil
+
+# Dependências opcionais (se necessário no futuro):
+# Nenhuma dependência adicional é necessária para a versão atual 
